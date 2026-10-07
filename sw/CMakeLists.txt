@@ -44,6 +44,7 @@ add_subdirectory(picocart64_shared)
 
 # Add applications
 add_subdirectory(picocart64_v1)
+add_subdirectory(picocart64_cic_only)
 
 add_compile_options(-Wall
         -Wno-format          # int != int32_t as far as the compiler is concerned because gcc has int32_t as long int

@@ -1,0 +1,7 @@
+vivado/
+*.xsa
+sim/*.vvp
+sim/*.vcd
+.Xil/
+*.jou
+*.log

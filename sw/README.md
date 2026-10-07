@@ -37,3 +37,21 @@ openocd -f interface/jlink.cfg -c "transport select swd; adapter_khz 1000" -f ta
 # Alternatively, attach a debugger, `mon reset halt`, `c`, does the trick as well. It seems that openocd's `reset run` doesn't work properly.
 
 ```
+
+## CIC-only firmware
+
+`picocart64_cic_only` runs only the CIC emulation and leaves the PI bus pins
+(GPIO 0-19) as floating inputs. Use it when an external device (e.g. an FPGA board
+wired to the same pins) serves ROM and SRAM to the N64.
+
+```bash
+cd sw
+mkdir build
+cd build
+cmake -DREGION=NTSC ..
+cmake --build . --target picocart64_cic_only
+
+# Flash picocart64_cic_only/picocart64_cic_only.uf2 the same way as above.
+```
+
+The CIC is emulated as a 6102/7101, which matches most games.

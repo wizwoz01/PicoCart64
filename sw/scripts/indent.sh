@@ -29,6 +29,7 @@ C_DIRECTORIES="
     n64
     n64_cic
     picocart64_v1
+    picocart64_cic_only
     picocart64_shared
     stdio_async_uart
 "
