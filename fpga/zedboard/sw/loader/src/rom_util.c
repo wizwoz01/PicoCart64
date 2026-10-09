@@ -75,7 +75,7 @@ int rom_has_rom_extension(const char *name)
 	return strcmp(ext, "z64") == 0 || strcmp(ext, "v64") == 0 || strcmp(ext, "n64") == 0;
 }
 
-int rom_save_path(const char *rom_path, char *out, size_t out_len)
+int rom_save_path(const char *rom_path, const char *ext, char *out, size_t out_len)
 {
 	const char *slash = strrchr(rom_path, '/');
 	const char *dot = strrchr(rom_path, '.');
@@ -86,10 +86,10 @@ int rom_save_path(const char *rom_path, char *out, size_t out_len)
 	else
 		base_len = (size_t)(dot - rom_path);
 
-	if (base_len + 5 > out_len)
+	if (base_len + strlen(ext) + 1 > out_len)
 		return -1;
 	memcpy(out, rom_path, base_len);
-	memcpy(out + base_len, ".sra", 5);
+	strcpy(out + base_len, ext);
 	return 0;
 }
 
@@ -106,23 +106,74 @@ void rom_title(const uint8_t *z64, char *out)
 		out[i] = '\0';
 }
 
-uint32_t crc32_calc(const uint8_t *buf, size_t len)
+int rom_is_pal(const uint8_t *z64)
 {
-	uint32_t crc = 0xFFFFFFFFu;
-	size_t i;
-	int b;
-
-	for (i = 0; i < len; i++) {
-		crc ^= buf[i];
-		for (b = 0; b < 8; b++)
-			crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
-	}
-	return ~crc;
+	return strchr("DFHILPSUWXYZ", z64[0x3E]) != NULL && z64[0x3E] != 0;
 }
 
-uint32_t rom_ipl3_crc32(const uint8_t *z64)
+static uint32_t rd32(const uint8_t *p)
 {
-	return crc32_calc(z64 + 0x40, 0x1000 - 0x40);
+	return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
+}
+
+// A conditional branch on register r back to itself: loops while r says so
+static int branch_to_self_on(uint32_t w, unsigned r)
+{
+	unsigned op = w >> 26, rs = (w >> 21) & 31, rt = (w >> 16) & 31;
+
+	if ((w & 0xFFFF) != 0xFFFF)
+		return 0;
+	switch (op) {
+	case 0x04:					// BEQ, BNE, BEQL, BNEL
+	case 0x05:
+	case 0x14:
+	case 0x15:
+		return (rs == r || rt == r) && rs != rt;
+	case 0x06:					// BLEZ, BGTZ, BLEZL, BGTZL
+	case 0x07:
+	case 0x16:
+	case 0x17:
+		return rs == r && rt == 0;
+	case 0x01:					// BLTZ, BGEZ, BLTZL, BGEZL
+		return rs == r && rt <= 3;
+	default:
+		return 0;
+	}
+}
+
+int rom_unlock_region(uint8_t *z64, size_t size)
+{
+	const size_t end = size < 0x101000 ? size : 0x101000;
+	size_t i, j, k;
+	int n = 0;
+
+	for (i = 0x1000; i + 4 <= end; i += 4) {
+		uint32_t w = rd32(z64 + i);
+		unsigned base;
+
+		// LUI base, 0x8000, then within 4 instructions LW r, 0x300(base)
+		if ((w & 0xFFE0FFFF) != 0x3C008000)
+			continue;
+		base = (w >> 16) & 31;
+		for (j = i + 4; j <= i + 16 && j + 4 <= end; j += 4) {
+			unsigned r;
+
+			w = rd32(z64 + j);
+			if ((w & 0xFFE0FFFF) != (0x8C000300u | (base << 21)))
+				continue;
+			r = (w >> 16) & 31;
+			// and within 8 more a branch to itself on r: replace it with a NOP
+			for (k = j + 4; k <= j + 32 && k + 4 <= end; k += 4) {
+				if (branch_to_self_on(rd32(z64 + k), r)) {
+					z64[k] = z64[k + 1] = z64[k + 2] = z64[k + 3] = 0;
+					n++;
+					break;
+				}
+			}
+			break;
+		}
+	}
+	return n;
 }
 
 uint32_t sram_pack(const uint8_t *b)

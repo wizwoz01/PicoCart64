@@ -97,7 +97,14 @@ ENV/
 *.vcd
 *.gtkw
 *.hex
+
+# N64 ROMs and saves
+ROMs/
 *.z64
+*.v64
+*.n64
+*.sra
+*.eep
 
 rom.h
 

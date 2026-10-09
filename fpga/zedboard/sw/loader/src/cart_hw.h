@@ -16,6 +16,38 @@
 #define CART_REG_UNDERRUNS   0x00014u
 #define CART_REG_LAST_ADDR   0x00018u
 #define CART_REG_ADDR_COUNT  0x0001Cu
+#define CART_REG_BUTTONS     0x00020u
+#define CART_REG_OLED_CTRL   0x00024u
+#define CART_REG_OLED_DATA   0x00028u
+#define CART_REG_OLED_FLUSH  0x0002Cu
+#define CART_REG_CIC         0x00030u
+#define CART_REG_EEPROM      0x00034u
+// Bus monitor, cleared when the N64 is turned on (bus_diag.h)
+#define CART_REG_MON_ALE     0x00038u
+#define CART_REG_MON_RW      0x0003Cu
+#define CART_REG_MON_FIRST   0x00040u
+#define CART_REG_MON_DATA    0x00044u
+#define CART_REG_MON_ROM     0x00048u
+#define CART_REG_MON_AD_OR   0x0004Cu
+#define CART_REG_PINS        0x00050u
+#define CART_REG_MON_GLITCH  0x00054u
+#define CART_REG_MON_ODD     0x00058u
+#define CART_REG_MON_NOISE   0x0005Cu
+#define CART_REG_MON_XFER_N  0x00060u	// transfers finished, then the one in progress:
+#define CART_REG_MON_XFER    0x00064u	// address, {writes, reads}, sum
+#define CART_REG_MON_SDAT    0x00070u	// S_DAT, see bus_diag.h
+#define CART_REG_MON_SDAT_LOW 0x00074u
+#define CART_REG_SDAT_LOG_N  0x00078u
+#define CART_OLED_FB         0x01000u
+#define CART_EEPROM          0x02000u
+#define CART_EEPROM_SIZE     0x00800u
+#define CART_TRACE_A         0x03000u	// address trace, see bus_diag.h
+#define CART_TRACE_B         0x04000u
+#define CART_NOISE           0x05000u	// first 16 noise events
+#define CART_XFER            0x06000u	// last 256 transfers, 4 words each
+#define CART_XFER_LEN        256
+#define CART_SDAT_LOG        0x07000u	// first 1024 S_DAT events, see bus_diag.h
+#define CART_SDAT_LOG_LEN    1024
 #define CART_SRAM            0x20000u
 #define CART_SRAM_SIZE       0x20000u
 
@@ -26,9 +58,37 @@
 #define CART_STATUS_N64_ON   (1u << 0)
 #define CART_STATUS_DIRTY    (1u << 1)
 #define CART_STATUS_UNDERRUN (1u << 2)
+#define CART_STATUS_EEP_DIRTY (1u << 3)
 
 #define CART_CLEAR_DIRTY     (1u << 1)
 #define CART_CLEAR_UNDERRUN  (1u << 2)
+#define CART_CLEAR_EEP_DIRTY (1u << 3)
+
+// PINS: levels numbered like the Pico GPIOs, S_DAT in bit 23
+#define CART_PINS_COLD_RESET (1u << 22)
+#define CART_PINS_SDAT       (1u << 23)
+
+// EEPROM
+#define CART_EEPROM_ENABLE   (1u << 0)
+#define CART_EEPROM_16K      (1u << 1)
+
+// BUTTONS: [4:0] held, [12:8] pressed since last cleared (write 1 to clear)
+#define CART_BTN_C           (1u << 0)
+#define CART_BTN_D           (1u << 1)
+#define CART_BTN_L           (1u << 2)
+#define CART_BTN_R           (1u << 3)
+#define CART_BTN_U           (1u << 4)
+#define CART_BTN_ALL         0x1Fu
+#define CART_BTN_PRESSED_SHIFT 8
+
+// OLED_CTRL
+#define CART_OLED_VDD        (1u << 0)
+#define CART_OLED_VBAT       (1u << 1)
+#define CART_OLED_RUN        (1u << 2)	// RES# released
+#define CART_OLED_BUSY       (1u << 8)
+
+// OLED_DATA: byte in [7:0], D/C in bit 8
+#define CART_OLED_DC         (1u << 8)
 
 // ROM image in DDR. The default standalone linker script keeps the program
 // near the start of DDR, far below this.

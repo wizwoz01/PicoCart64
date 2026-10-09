@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: BSD-2-Clause
 //
 // ZedBoard top: Zynq block design (design_1, created by scripts/create_project.tcl)
-// plus the bidirectional N64 AD bus buffers.
+// plus the bidirectional N64 AD bus buffers, push buttons, OLED, the joybus
+// S_DAT line and the CIC type lines (both open drain).
 
 `default_nettype none
 
@@ -35,10 +36,23 @@ module system_top (
 	input  wire        n64_write_n,
 	input  wire        n64_cold_reset,
 
-	output wire [7:0]  led
+	output wire [7:0]  led,
+
+	input  wire [4:0]  btn,			// BTNC, BTND, BTNL, BTNR, BTNU
+	output wire        oled_vdd,
+	output wire        oled_vbat,
+	output wire        oled_res,
+	output wire        oled_dc,
+	output wire        oled_sclk,
+	output wire        oled_sdin,
+
+	inout  wire        n64_sdat,
+	output wire [2:0]  cic_type		// to Pico GPIO26-28
 );
 
 	wire [15:0] ad_i, ad_o, ad_t;
+	wire        sdat_i, sdat_t;
+	wire [2:0]  cic_t;
 
 	genvar i;
 	generate
@@ -48,6 +62,23 @@ module system_top (
 				.I(ad_o[i]),
 				.O(ad_i[i]),
 				.T(ad_t[i])
+			);
+		end
+	endgenerate
+
+	IOBUF u_sdat (
+		.IO(n64_sdat),
+		.I(1'b0),
+		.O(sdat_i),
+		.T(sdat_t)
+	);
+
+	generate
+		for (i = 0; i < 3; i = i + 1) begin : g_cic
+			OBUFT u_obuft (
+				.O(cic_type[i]),
+				.I(1'b0),
+				.T(cic_t[i])
 			);
 		end
 	endgenerate
@@ -82,7 +113,17 @@ module system_top (
 		.read_n(n64_read_n),
 		.write_n(n64_write_n),
 		.cold_reset(n64_cold_reset),
-		.led(led)
+		.led(led),
+		.btn(btn),
+		.oled_vdd(oled_vdd),
+		.oled_vbat(oled_vbat),
+		.oled_res(oled_res),
+		.oled_dc(oled_dc),
+		.oled_sclk(oled_sclk),
+		.oled_sdin(oled_sdin),
+		.sdat_i(sdat_i),
+		.sdat_t(sdat_t),
+		.cic_t(cic_t)
 	);
 
 endmodule

@@ -52,7 +52,8 @@ apply_bd_automation -rule xilinx.com:bd_rule:axi4 -config { \
 	ddr_seg {Auto} intc_ip {Auto} master_apm {0} \
 } [get_bd_intf_pins ps7/S_AXI_HP0]
 
-foreach pin {ad_i ad_o ad_t aleh alel read_n write_n cold_reset led} {
+foreach pin {ad_i ad_o ad_t aleh alel read_n write_n cold_reset led \
+	     btn oled_vdd oled_vbat oled_res oled_dc oled_sclk oled_sdin sdat_i sdat_t cic_t} {
 	make_bd_pins_external [get_bd_pins cart/$pin]
 	set_property name $pin [get_bd_ports ${pin}_0]
 }

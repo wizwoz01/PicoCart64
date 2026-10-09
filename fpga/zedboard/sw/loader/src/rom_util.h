@@ -16,9 +16,6 @@ typedef enum {
 	ROM_FMT_N64,				// 32-bit little-endian
 } rom_format_t;
 
-// CRC32 of the IPL3 (0x40-0x1000) shipped with CIC 6102/7101 games
-#define IPL3_CRC_6102 0x90BB6CB5u
-
 #define ROM_TITLE_LEN 20
 
 const char *rom_format_name(rom_format_t fmt);
@@ -33,17 +30,22 @@ void rom_to_z64(uint8_t * buf, size_t len, rom_format_t fmt);
 // True for *.z64, *.v64 and *.n64 (any case)
 int rom_has_rom_extension(const char *name);
 
-// "dir/Game.z64" -> "dir/Game.sra". Returns 0 on success, -1 if out is too small.
-int rom_save_path(const char *rom_path, char *out, size_t out_len);
+// "dir/Game.z64", ".sra" -> "dir/Game.sra". Returns 0 on success, -1 if out is too small.
+int rom_save_path(const char *rom_path, const char *ext, char *out, size_t out_len);
 
 // Copies the header title (0x20-0x33) to out (ROM_TITLE_LEN + 1 bytes),
 // with non-printable characters replaced and trailing spaces removed.
 void rom_title(const uint8_t * z64, char *out);
 
-uint32_t crc32_calc(const uint8_t * buf, size_t len);
+// True if the header's region code (0x3E) is a PAL one
+int rom_is_pal(const uint8_t * z64);
 
-// CRC32 of the IPL3 area of a .z64 image (needs at least 0x1000 bytes)
-uint32_t rom_ipl3_crc32(const uint8_t * z64);
+// Removes region locks from the boot code (ROM 0x1000-0x101000): a read of the
+// console's TV type (osTvType, 0x80000300) followed by a branch to itself on
+// it, which hangs the game on a console of another region. Each such branch
+// becomes a NOP. Returns how many were removed; the header checksum then has
+// to be updated (cic_header_crc).
+int rom_unlock_region(uint8_t * z64, size_t size);
 
 // SRAM window word <-> N64 SRAM bytes (see cart_regs.v): word = b0<<24 | b1<<16 | b2<<8 | b3
 uint32_t sram_pack(const uint8_t * b);
