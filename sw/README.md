@@ -42,7 +42,16 @@ openocd -f interface/jlink.cfg -c "transport select swd; adapter_khz 1000" -f ta
 
 `picocart64_cic_only` runs only the CIC emulation and leaves the PI bus pins
 (GPIO 0-19) as floating inputs. Use it when an external device (e.g. an FPGA board
-wired to the same pins) serves ROM and SRAM to the N64.
+wired to the same pins) serves ROM and saves to the N64, as in `fpga/zedboard`.
+
+The console checks the CIC for as long as it is on and halts on a single late
+answer, so this firmware doesn't use the interrupt-driven `n64_cic` library:
+`cic_poll.c` runs the protocol in a loop that polls the pins with interrupts off,
+like the CIC of SummerCart64 (whose interrupt-driven version froze games at random).
+It runs at 133 MHz, without FreeRTOS.
+
+`REGION` is the region of your console. The external device picks the CIC type on
+GPIO26-28 (header J1), see `fpga/zedboard/README.md`.
 
 ```bash
 cd sw
@@ -54,4 +63,21 @@ cmake --build . --target picocart64_cic_only
 # Flash picocart64_cic_only/picocart64_cic_only.uf2 the same way as above.
 ```
 
-The CIC is emulated as a 6102/7101, which matches most games.
+With GPIO26-28 unconnected the CIC is emulated as a 6102/7101, which matches most
+games. Pulled low by the external device, they select the type:
+
+| GPIO28..26 | CIC |
+|------------|-----|
+| 7 (open) | 6102/7101 |
+| 6 | 6101 |
+| 5 | 7102 |
+| 4 | 6103/7103 |
+| 3 | 6105/7105 |
+| 2 | 6106/7106 |
+
+The Pico's LED turns on once the console's PIF has accepted the CIC, then toggles
+on every command the PIF sends. If it stays off with the N64 on, the Pico has no
+power, doesn't run this firmware, or the PIF rejected the CIC (e.g. wrong `REGION`).
+If it stops changing while a game runs, the PIF stopped talking to the CIC: it
+also does that when it hangs on a stuck EEPROM line (S_DAT), so check that first
+(`fpga/zedboard/README.md`).
