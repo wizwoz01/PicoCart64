@@ -9,6 +9,10 @@
  * the cart SRAM, enables the cart and writes the save back to the SD card
  * whenever the game changes it. After the N64 is turned on, it reports from
  * the cart's bus monitor how far the boot got.
+ *
+ * 64DD disks (.ndd) go into the emulated drive (dd_zynq.c). A disk alone
+ * boots from the 64DD's IPL ROM, found on the SD card; a game picked while a
+ * disk is in boots from the cartridge with the drive attached.
  */
 
 #include <stdio.h>
@@ -26,6 +30,7 @@
 #include "bus_diag.h"
 #include "cart_hw.h"
 #include "cic.h"
+#include "dd_zynq.h"
 #include "menu.h"
 #include "oled_gfx.h"
 #include "rom_util.h"
@@ -49,6 +54,13 @@
 #define TERM_IDLE_MS     30000		// a key after this long redraws the terminal
 #define KEY_QUEUE        32
 #define KEY_FLIP         0x300		// BTNL + BTNR
+
+// What the N64 finds: a cartridge, a cartridge and the 64DD, or the 64DD alone
+enum {
+	MODE_CART,
+	MODE_COMBO,
+	MODE_DISK,
+};
 
 static FATFS fs;
 static ui_rom_t roms[MAX_ROMS];
@@ -398,7 +410,7 @@ static void scan_roms(int remount, const char *keep)
 	}
 	if (ui.sd_ok && f_opendir(&dir, ROM_DIR) == FR_OK) {
 		while (n < MAX_ROMS && f_readdir(&dir, &fno) == FR_OK && fno.fname[0]) {
-			if ((fno.fattrib & AM_DIR) || !rom_has_rom_extension(fno.fname))
+			if ((fno.fattrib & AM_DIR) || !(rom_has_rom_extension(fno.fname) || dd_is_disk_name(fno.fname)))
 				continue;
 			if (strlen(fno.fname) >= UI_NAME_LEN)
 				continue;
@@ -490,6 +502,14 @@ static int choose_rom(void)
 			case 'R':
 				rescan();
 				break;
+			case 'e':
+			case 'E':
+				if (ui.n64_on)
+					ui_log(UI_WARN, "Turn the N64 off before taking the disk out.");
+				else
+					dd_eject();
+				ui.dd_status[0] = '\0';
+				break;
 			case TUI_KEY_ENTER:
 			case UI_KEY_BTN_C:
 				if (ui.rom_count == 0) {
@@ -542,7 +562,7 @@ static int load_rom(const char *path, const char *name)
 {
 	uint8_t *dst = (uint8_t *)ROM_DDR_BASE;
 	rom_format_t fmt = ROM_FMT_UNKNOWN;
-	uint32_t size, off = 0, drawn_ms = 0;
+	uint32_t size, off = 0, drawn_ms = 0, crc[2];
 	int unlocked = 0;
 	FIL f;
 	UINT br;
@@ -607,10 +627,9 @@ static int load_rom(const char *path, const char *name)
 
 	// Region locks hang a game on a console of another region. Removing one
 	// changes the boot code, so its checksum in the header changes too.
-	if (cic != CIC_UNKNOWN && size >= 0x101000)
+	if (size >= 0x101000 && cic_header_crc(dst, cic, crc) == 0)
 		unlocked = rom_unlock_region(dst, size);
 	if (unlocked) {
-		uint32_t crc[2];
 		int i;
 
 		cic_header_crc(dst, cic, crc);
@@ -630,10 +649,72 @@ static int load_rom(const char *path, const char *name)
 		ui_log(UI_WARN, "Unknown boot code: the Pico answers as a 6102, so the game may not start.");
 	if (ui.pal)
 		ui_log(UI_INFO, "PAL release: on an NTSC N64 some PAL games output 50 Hz video that some TVs can't show.");
-	if (save_type == SAVE_FLASHRAM)
-		ui_log(UI_WARN, "This game saves to FlashRAM, which the cart doesn't emulate yet: progress won't be kept.");
-	else if (save_type == SAVE_UNKNOWN)
+	if (save_type == SAVE_UNKNOWN)
 		ui_log(UI_INFO, "Game not in the save list: EEPROM 4 Kbit and SRAM are both available.");
+	return 0;
+}
+
+// The 64DD line on the game screen
+static void dd_status_update(void)
+{
+	const dd_disk_info_t *i = dd_info();
+
+	if (i)
+		snprintf(ui.dd_status, sizeof(ui.dd_status), "disk %s (%s, type %u, ID %s)", dd_disk_name(),
+			 dd_region_name(i->region), i->type, i->id);
+	else
+		ui.dd_status[0] = '\0';
+}
+
+static void load_progress(uint32_t done, uint32_t total)
+{
+	static uint32_t drawn_ms;
+	uint32_t now = now_ms();
+
+	ui.load_done = done;
+	ui.rom_size = total;
+	if (now - drawn_ms >= 200 || done == total) {
+		drawn_ms = now;
+		refresh(now);
+	}
+}
+
+// A disk alone boots from the 64DD's IPL ROM, with no cartridge
+static int load_disk_game(const char *path, const char *name)
+{
+	static char ipl[UI_NAME_LEN];
+	const uint8_t *h = (const uint8_t *)IPL_DDR_BASE;
+
+	ui_log_clear();
+	snprintf(ui.rom_name, sizeof(ui.rom_name), "%s", name);
+	ui.title[0] = '\0';
+	ui.rom_format = NULL;
+	ui.rom_size = DD_NDD_SIZE;
+	ui.load_done = 0;
+	ui.screen = UI_LOADING;
+	refresh(now_ms());
+
+	if (dd_load_disk(path, name, load_progress) != 0)
+		return -1;
+	dd_status_update();
+	if (dd_load_ipl(&cic, ipl, sizeof(ipl)) != 0) {
+		ui_log(UI_ERROR, "No 64DD IPL ROM on the SD card: copy your IPL dump (.n64 or .z64) to it.");
+		return -1;
+	}
+	rom_header = ((uint32_t)h[0] << 24) | ((uint32_t)h[1] << 16) | ((uint32_t)h[2] << 8) | h[3];
+	if (dd_disk_match_ipl())
+		ui_log(UI_INFO, "The IPL only takes disks of its own region: the disk now says %s (in memory only).",
+		       dd_region_name(dd_info()->region));
+	snprintf(ui.title, sizeof(ui.title), "64DD disk %s", dd_info()->id);
+	ui.rom_format = "ndd";
+	ui.pal = 0;
+	ui.cic = cic_name(cic);
+	save_type = SAVE_NONE;
+	ui.save_type = "64DD disk";
+	snprintf(ui.save_name, sizeof(ui.save_name), "%s", name);
+	ui_log(UI_INFO, "Boots the 64DD IPL ROM %s (CIC %s), without a cartridge.", ipl, ui.cic);
+	if (cic != CIC_DD_US && cic != CIC_DD_JP)
+		ui_log(UI_WARN, "Unknown IPL boot code: the Pico answers as the US 64DD IPL's CIC.");
 	return 0;
 }
 
@@ -705,16 +786,19 @@ static void eeprom_config(void)
 // Picks the save memories for the game's save type and fills them from the SD card
 static int saves_setup(const char *rom_path, const char *rom_name)
 {
-	int unknown = save_type == SAVE_UNKNOWN;
+	int unknown = save_type == SAVE_UNKNOWN, flash = save_type == SAVE_FLASHRAM;
 
+	// FlashRAM lives in the SRAM's memory; erased flash reads 0xFF
+	sram.ext = flash ? ".fla" : ".sra";
+	sram.blank = flash ? 0xFF : 0x00;
 	if (rom_save_path(rom_path, sram.ext, sram.path, sizeof(sram.path)) != 0 ||
 	    rom_save_path(rom_name, sram.ext, sram.name, sizeof(sram.name)) != 0 ||
 	    rom_save_path(rom_path, eeprom.ext, eeprom.path, sizeof(eeprom.path)) != 0 ||
 	    rom_save_path(rom_name, eeprom.ext, eeprom.name, sizeof(eeprom.name)) != 0)
 		return -1;
 
-	sram.size = (save_type == SAVE_SRAM_96K) ? 96u * 1024 : 32u * 1024;
-	sram.used = save_type == SAVE_SRAM || save_type == SAVE_SRAM_96K;
+	sram.size = flash ? 128u * 1024 : (save_type == SAVE_SRAM_96K) ? 96u * 1024 : 32u * 1024;
+	sram.used = save_type == SAVE_SRAM || save_type == SAVE_SRAM_96K || flash;
 	eeprom.size = (save_type == SAVE_EEPROM_16K) ? 2048 : 512;
 	eeprom.used = save_type == SAVE_EEPROM_4K || save_type == SAVE_EEPROM_16K;
 
@@ -880,6 +964,16 @@ static void trace_dump(void)
 		uart_write(line, (int)strlen(line));
 		k = e;
 	}
+	n = dd_log_lines();
+	snprintf(line, sizeof(line), "--- 64DD, the last %d drive events since power on ---\r\n", n);
+	uart_write(line, (int)strlen(line));
+	for (i = 0; i < n; i++) {
+		char ev[90];
+
+		dd_log_line(i, ev, sizeof(ev));
+		snprintf(line, sizeof(line), "%s\r\n", ev);
+		uart_write(line, (int)strlen(line));
+	}
 	uart_write("--- end ---\r\n", 13);
 	tui_invalidate();
 }
@@ -930,22 +1024,33 @@ static void bus_report(int monitor)
 }
 
 // Runs until the user asks for the menu with the N64 off
-static void run_game(void)
+static void run_game(int mode)
 {
 	uint32_t base_underruns = cart_rd(CART_REG_UNDERRUNS);
-	uint32_t underrun_ms = 0, on_ms = 0, xfers = 0, xfer_ms = 0;
+	uint32_t underrun_ms = 0, on_ms = 0, xfers = 0, xfer_ms = 0, lost = dd_events_lost();
 	int was_on = -1, report_due = 0, monitor = 0, stalled = 0;
 	int key;
+	uint8_t code = cic_pico_code(cic);
 
+	// Without a cartridge the Pico answers as the 64DD's CIC
+	if (mode == MODE_DISK && cic != CIC_DD_US && cic != CIC_DD_JP)
+		code = CIC_CODE_DD_US;
 	ui.saves = 0;
 	ui.save_pending = 0;
 	ui.underruns = 0;
 	ui.bus_valid = 0;
 	ui.screen = UI_GAME;
+	dd_status_update();
 	cart_wr(CART_REG_CLEAR, CART_CLEAR_DIRTY | CART_CLEAR_UNDERRUN | CART_CLEAR_EEP_DIRTY);
-	cart_wr(CART_REG_CIC, cic_pico_code(cic));
-	cart_wr(CART_REG_CTRL, CART_CTRL_ENABLE);
-	ui_log(UI_GOOD, "Cart enabled. Power on the N64.");
+	cart_wr(CART_REG_CIC, code);
+	cart_wr(CART_REG_CTRL, CART_CTRL_ENABLE | (mode != MODE_CART ? CART_CTRL_DD : 0) |
+		(mode == MODE_DISK ? CART_CTRL_ROM_OFF : 0) | (save_type == SAVE_FLASHRAM ? CART_CTRL_FLASH : 0));
+	if (mode == MODE_DISK)
+		ui_log(UI_GOOD, "64DD enabled, no cartridge. Power on the N64.");
+	else if (mode == MODE_COMBO)
+		ui_log(UI_GOOD, "Cart and 64DD enabled. Power on the N64.");
+	else
+		ui_log(UI_GOOD, "Cart enabled. Power on the N64.");
 
 	for (;;) {
 		uint32_t now = now_ms();
@@ -956,6 +1061,8 @@ static void run_game(void)
 		if (on != was_on) {
 			if (was_on >= 0)
 				ui_log(UI_INFO, on ? "N64 on" : "N64 off");
+			if (mode != MODE_CART)
+				dd_console(on);		// the drive resets with the console
 			if (on) {
 				on_ms = now;
 				report_due = 1;
@@ -982,7 +1089,10 @@ static void run_game(void)
 		if (on && (cart_rd(CART_REG_PINS) & CART_PINS_COLD_RESET))
 			monitor = 1;
 		if (report_due && (!on || now - on_ms >= BOOT_MS)) {
-			bus_report(monitor);
+			if (mode != MODE_DISK)		// the 64DD alone boots from its IPL ROM instead
+				bus_report(monitor);
+			else
+				bus_read();
 			report_due = 0;
 		} else if (ui.bus_valid) {
 			bus_read();
@@ -997,7 +1107,14 @@ static void run_game(void)
 
 		save_poll(&sram, status, now);
 		save_poll(&eeprom, status, now);
-		ui.save_pending = sram.pending || eeprom.pending;
+		if (mode != MODE_CART) {
+			dd_poll(now, SAVE_QUIET_MS);
+			if (dd_events_lost() != lost) {
+				lost = dd_events_lost();
+				ui_log(UI_WARN, "64DD: %lu register writes were lost (event FIFO full)", (unsigned long)lost);
+			}
+		}
+		ui.save_pending = sram.pending || eeprom.pending || dd_unsaved();
 
 		poll_input(now);
 		while ((key = next_key(now)) != TUI_KEY_NONE) {
@@ -1009,8 +1126,19 @@ static void run_game(void)
 					save_store(&sram);
 				if (eeprom.used)
 					save_store(&eeprom);
-				if (!sram.used && !eeprom.used)
+				if (!sram.used && !eeprom.used && !dd_save())
 					ui_log(UI_INFO, "Nothing to save yet");
+				break;
+			case 'e':
+			case 'E':
+				if (mode == MODE_CART)
+					break;
+				if (on) {
+					ui_log(UI_WARN, "Turn the N64 off before taking the disk out.");
+					break;
+				}
+				dd_eject();
+				dd_status_update();
 				break;
 			case 't':
 			case 'T':
@@ -1028,6 +1156,7 @@ static void run_game(void)
 					save_store(&sram);
 				if (eeprom.pending)
 					save_store(&eeprom);
+				dd_save();
 				cart_wr(CART_REG_CTRL, 0);
 				cart_wr(CART_REG_EEPROM, 0);
 				cart_wr(CART_REG_CIC, CIC_CODE_6102);
@@ -1036,7 +1165,7 @@ static void run_game(void)
 				break;
 			}
 		}
-		ui.save_pending = sram.pending || eeprom.pending;
+		ui.save_pending = sram.pending || eeprom.pending || dd_unsaved();
 
 		refresh(now);
 		usleep(POLL_MS * 1000);
@@ -1059,6 +1188,8 @@ int main(void)
 	cart_wr(CART_REG_EEPROM, 0);
 	cart_wr(CART_REG_CIC, CIC_CODE_6102);
 	cart_wr(CART_REG_ROM_BASE, ROM_DDR_BASE);
+	if (dd_init() != 0)
+		printf("64DD: interrupt setup failed, disks won't work\r\n");
 
 	tui_init(uart_write);
 	tui_key_init(&keydec);
@@ -1071,15 +1202,48 @@ int main(void)
 	activity_ms = now_ms();
 
 	for (;;) {
+		int mode;
+
 		idx = choose_rom();
 		snprintf(path, sizeof(path), "%s%s", ROM_DIR, roms[idx].name);
-		if (load_rom(path, roms[idx].name) != 0)
-			continue;
+		if (dd_is_disk_name(roms[idx].name)) {
+			if (load_disk_game(path, roms[idx].name) != 0)
+				continue;
+			mode = MODE_DISK;
+		} else {
+			if (load_rom(path, roms[idx].name) != 0)
+				continue;
+			if (dd_is_ipl((const uint8_t *)ROM_DDR_BASE)) {
+				// The IPL itself: the 64DD, with whatever disk is in the drive
+				dd_ipl_from_rom(ui.rom_size);
+				if (dd_disk_match_ipl())
+					ui_log(UI_INFO, "The disk in the drive now says %s, the IPL's region (in memory only).",
+					       dd_region_name(dd_info()->region));
+				mode = MODE_DISK;
+				ui_log(UI_INFO, dd_disk_name() ? "64DD IPL with the disk in the drive" :
+				       "64DD IPL with an empty drive");
+			} else if (dd_disk_name()) {
+				static char ipl[UI_NAME_LEN];
+				cic_t ipl_cic;
+
+				mode = MODE_COMBO;
+				if (dd_load_ipl(&ipl_cic, ipl, sizeof(ipl)) != 0)
+					ui_log(UI_WARN, "No 64DD IPL ROM on the SD card: the game may not find the drive.");
+				ui_log(UI_INFO, "64DD disk %s in the drive: the game boots from the cartridge (e ejects).",
+				       dd_disk_name());
+			} else {
+				mode = MODE_CART;
+			}
+		}
 		write_text(LAST_FILE, roms[idx].name);
-		if (saves_setup(path, roms[idx].name) != 0) {
+		if (mode == MODE_DISK) {
+			sram.used = sram.pending = 0;
+			eeprom.used = eeprom.pending = 0;
+			cart_wr(CART_REG_EEPROM, 0);
+		} else if (saves_setup(path, roms[idx].name) != 0) {
 			ui_log(UI_ERROR, "File name too long");
 			continue;
 		}
-		run_game();
+		run_game(mode);
 	}
 }

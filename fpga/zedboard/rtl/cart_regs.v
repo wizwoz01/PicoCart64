@@ -5,6 +5,9 @@
 // Byte offsets:
 //   0x00000  ID         RO  0x4E363443 ("N64C")
 //   0x00004  CTRL       RW  [0] enable: respond on the N64 bus
+//                           [1] answer as the 64DD (registers, buffers, IPL ROM)
+//                           [2] no cartridge: leave the ROM addresses alone
+//                           [3] the SRAM is a FlashRAM chip (flashram.v)
 //   0x00008  ROM_BASE   RW  DDR physical address of the .z64 image (128-byte aligned)
 //   0x0000C  STATUS     RO  [0] N64 powered (COLD_RESET high)
 //                           [1] SRAM dirty (written by the N64)
@@ -66,6 +69,7 @@
 //   0x07000-0x07FFF SDAT_LOG RO the first 1024 S_DAT events since power on:
 //                           [31:30] 0 line fell, 1 line rose, 2 cart pulls low,
 //                           3 cart lets go; [29:0] time in 40 ns units
+//   0x08000-0x09FFF DD     RW the 64DD's buffers and registers (dd_asic.v)
 //   0x20000-0x3FFFF SRAM RW  32-bit word k holds N64 SRAM bytes 4k..4k+3 as
 //                           {b0, b1, b2, b3} in [31:0] (big-endian in a LE word)
 
@@ -96,6 +100,9 @@ module cart_regs (
 	input  wire        s_axi_rready,
 
 	output reg         enable = 1'b0,
+	output reg         dd_enable = 1'b0,
+	output reg         rom_off = 1'b0,
+	output reg         flash_mode = 1'b0,
 	output reg  [31:0] rom_base = 32'h1000_0000,
 	input  wire        n64_on,
 	input  wire        underrun,
@@ -148,6 +155,14 @@ module cart_regs (
 	input  wire [31:0] mon_sdat_low,
 	input  wire [10:0] sdat_log_n,
 	input  wire [31:0] sdat_log_q,
+
+	// 64DD (dd_asic): word address in the window, 1 clock read latency
+	output wire [10:0] dd_arm_addr,
+	output wire        dd_arm_rd,
+	output wire        dd_arm_wr,
+	output wire [31:0] dd_arm_wdata,
+	output wire [3:0]  dd_arm_wstrb,
+	input  wire [31:0] dd_arm_q,
 	input  wire [31:0] pins,
 
 	output wire [9:0]  trace_raddr,
@@ -196,10 +211,11 @@ module cart_regs (
 	wire [3:0]  b_we = (wr_do && s_axi_awaddr[17]) ? s_axi_wstrb : 4'b0000;
 	reg  [31:0] b_dout = 32'h0;
 
-	// Below 0x20000: registers, OLED frame buffer, EEPROM, address trace
-	wire        reg_sel = !s_axi_awaddr[17] && s_axi_awaddr[14:12] == 3'b000;
-	wire        fb_sel = !s_axi_awaddr[17] && s_axi_awaddr[14:12] == 3'b001;
-	wire        eep_sel = !s_axi_awaddr[17] && s_axi_awaddr[14:12] == 3'b010;
+	// Below 0x08000: registers, OLED frame buffer, EEPROM, address trace
+	wire        low_sel = s_axi_awaddr[17:15] == 3'b000;
+	wire        reg_sel = low_sel && s_axi_awaddr[14:12] == 3'b000;
+	wire        fb_sel = low_sel && s_axi_awaddr[14:12] == 3'b001;
+	wire        eep_sel = low_sel && s_axi_awaddr[14:12] == 3'b010;
 	wire [4:0]  btn_clear = (wr_do && reg_sel && s_axi_awaddr[7:2] == 6'h08) ? s_axi_wdata[12:8] : 5'h0;
 
 	// OLED frame buffer at 0x01000 (lives in oled_spi)
@@ -214,6 +230,13 @@ module cart_regs (
 
 	// Address trace at 0x03000 and 0x04000 (lives in n64_pi_bus), read only
 	assign trace_raddr = s_axi_araddr[11:2];
+
+	// 64DD at 0x08000 (lives in dd_asic)
+	assign dd_arm_addr = wr_do ? s_axi_awaddr[12:2] : s_axi_araddr[12:2];
+	assign dd_arm_rd = rd_go && s_axi_araddr[17:15] == 3'b001;
+	assign dd_arm_wr = wr_do && s_axi_awaddr[17:15] == 3'b001;
+	assign dd_arm_wdata = s_axi_wdata;
+	assign dd_arm_wstrb = s_axi_wstrb;
 
 	always @(posedge clk) begin
 		for (i = 0; i < 4; i = i + 1)
@@ -231,6 +254,9 @@ module cart_regs (
 			s_axi_rvalid <= 1'b0;
 			rd_wait <= 1'b0;
 			enable <= 1'b0;
+			dd_enable <= 1'b0;
+			rom_off <= 1'b0;
+			flash_mode <= 1'b0;
 			sram_dirty <= 1'b0;
 			underrun_seen <= 1'b0;
 			underruns <= 32'h0;
@@ -266,7 +292,12 @@ module cart_regs (
 				s_axi_bvalid <= 1'b1;
 				if (reg_sel) begin
 					case (s_axi_awaddr[7:2])
-					6'h01: enable <= s_axi_wdata[0];
+					6'h01: begin
+						enable <= s_axi_wdata[0];
+						dd_enable <= s_axi_wdata[1];
+						rom_off <= s_axi_wdata[2];
+						flash_mode <= s_axi_wdata[3];
+					end
 					6'h02: rom_base <= {s_axi_wdata[31:7], 7'b0};
 					6'h04: begin
 						if (s_axi_wdata[1])
@@ -312,6 +343,10 @@ module cart_regs (
 				s_axi_rvalid <= 1'b1;
 				if (rd_addr[17]) begin
 					s_axi_rdata <= b_dout;
+				end else if (rd_addr[16:15] == 2'b01) begin
+					s_axi_rdata <= dd_arm_q;
+				end else if (rd_addr[16:15] != 2'b00) begin
+					s_axi_rdata <= 32'h0;
 				end else if (rd_addr[14:12] == 3'b010) begin
 					s_axi_rdata <= eep_rdata;
 				end else if (rd_addr[14:12] == 3'b011) begin
@@ -329,7 +364,7 @@ module cart_regs (
 				end else begin
 					case (rd_addr[7:2])
 					6'h00: s_axi_rdata <= 32'h4E363443;
-					6'h01: s_axi_rdata <= {31'h0, enable};
+					6'h01: s_axi_rdata <= {28'h0, flash_mode, rom_off, dd_enable, enable};
 					6'h02: s_axi_rdata <= rom_base;
 					6'h03: s_axi_rdata <= {28'h0, eep_dirty, underrun_seen, sram_dirty, n64_on};
 					6'h05: s_axi_rdata <= underruns;

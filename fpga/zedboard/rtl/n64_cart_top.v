@@ -7,7 +7,8 @@
 //   m_axi : AXI4 read-only master for ROM data (to S_AXI_HP0)
 // The AD bus is exposed as ad_i/ad_o/ad_t and gets IOBUFs in system_top.v.
 // The ZedBoard push buttons and OLED are reached through the same registers,
-// as are the cart EEPROM on S_DAT and the CIC type lines to the Pico.
+// as are the cart EEPROM on S_DAT, the CIC type lines to the Pico and the 64DD
+// (dd_asic.v), whose interrupt drives /INT1 and whose events interrupt the ARM.
 
 `default_nettype none
 
@@ -76,7 +77,12 @@ module n64_cart_top #(
 
 	input  wire        sdat_i,			// joybus S_DAT, open drain
 	output wire        sdat_t,
-	output wire [2:0]  cic_t			// open drain: 1 = released
+	output wire [2:0]  cic_t,			// open drain: 1 = released
+	output wire        int1_t,			// /INT1, open drain: 0 = pull low (64DD interrupt)
+
+	(* X_INTERFACE_INFO = "xilinx.com:signal:interrupt:1.0 irq INTERRUPT" *)
+	(* X_INTERFACE_PARAMETER = "SENSITIVITY LEVEL_HIGH" *)
+	output wire        irq			// to the ARM: 64DD events waiting
 );
 
 	wire rst = ~aresetn;
@@ -84,10 +90,18 @@ module n64_cart_top #(
 	wire        enable;
 	wire [31:0] rom_base;
 	wire        rom_start, rom_pop, rom_valid;
-	wire [25:0] rom_addr;
+	wire [26:0] rom_addr;
+	wire        dd_enable, rom_off, dd_rd, dd_wr, dd_irq_n64, dd_arm_rd, dd_arm_wr;
+	wire [9:0]  dd_idx, dd_ev_idx;
+	wire [15:0] dd_rdata, dd_wdata;
+	wire [10:0] dd_arm_addr;
+	wire [31:0] dd_arm_wdata, dd_arm_q;
+	wire [3:0]  dd_arm_wstrb;
 	wire [15:0] rom_data;
-	wire [15:0] sram_addr, sram_rdata, sram_wdata;
+	wire [15:0] sram_addr, sram_rdata, sram_wdata;	// the bus's SRAM port
 	wire        sram_we;
+	wire [15:0] ram_addr, ram_rdata, ram_wdata;	// the SRAM block RAM, after flashram
+	wire        ram_we, flash_mode;
 	wire        n64_on, addr_pulse, rom_access, sram_access, underrun;
 	wire [31:0] last_addr;
 	wire        sram_dirty, underrun_seen;
@@ -119,6 +133,14 @@ module n64_cart_top #(
 		.clk(aclk),
 		.rst(rst),
 		.enable(enable),
+		.dd_enable(dd_enable),
+		.rom_off(rom_off),
+		.dd_idx(dd_idx),
+		.dd_rdata(dd_rdata),
+		.dd_rd(dd_rd),
+		.dd_wr(dd_wr),
+		.dd_ev_idx(dd_ev_idx),
+		.dd_wdata(dd_wdata),
 		.ad_i(ad_i),
 		.ad_o(ad_o),
 		.ad_t(ad_t),
@@ -217,10 +239,10 @@ module n64_cart_top #(
 		.addr_pulse(addr_pulse),
 		.sram_dirty(sram_dirty),
 		.underrun_seen(underrun_seen),
-		.sram_addr(sram_addr),
-		.sram_wdata(sram_wdata),
-		.sram_we(sram_we),
-		.sram_rdata(sram_rdata),
+		.sram_addr(ram_addr),
+		.sram_wdata(ram_wdata),
+		.sram_we(ram_we),
+		.sram_rdata(ram_rdata),
 		.btn_state(btn_state),
 		.btn_pressed(btn_pressed),
 		.oled_ctrl(oled_ctrl),
@@ -257,6 +279,15 @@ module n64_cart_top #(
 		.mon_sdat_low({sdat_low_us, sdat_low_max}),
 		.sdat_log_n(sdat_log_n),
 		.sdat_log_q(sdat_log_q),
+		.dd_enable(dd_enable),
+		.rom_off(rom_off),
+		.flash_mode(flash_mode),
+		.dd_arm_addr(dd_arm_addr),
+		.dd_arm_rd(dd_arm_rd),
+		.dd_arm_wr(dd_arm_wr),
+		.dd_arm_wdata(dd_arm_wdata),
+		.dd_arm_wstrb(dd_arm_wstrb),
+		.dd_arm_q(dd_arm_q),
 		.pins({8'h00, sdat, pins}),
 		.trace_raddr(trace_raddr),
 		.trace_a(trace_a),
@@ -292,6 +323,45 @@ module n64_cart_top #(
 	);
 
 	assign sdat_t = ~sdat_low;
+
+	// FlashRAM games: the SRAM block RAM holds the flash chip's contents
+	flashram u_flash (
+		.clk(aclk),
+		.rst(rst),
+		.flash_mode(flash_mode),
+		.n64_on(n64_on),
+		.pi_addr(sram_addr),
+		.pi_wdata(sram_wdata),
+		.pi_we(sram_we),
+		.pi_start(sram_access),
+		.pi_rdata(sram_rdata),
+		.ram_addr(ram_addr),
+		.ram_wdata(ram_wdata),
+		.ram_we(ram_we),
+		.ram_rdata(ram_rdata)
+	);
+
+	dd_asic u_dd (
+		.clk(aclk),
+		.rst(rst),
+		.n64_idx(dd_idx),
+		.n64_rdata(dd_rdata),
+		.n64_rd(dd_rd),
+		.n64_wr(dd_wr),
+		.ev_idx(dd_ev_idx),
+		.n64_wdata(dd_wdata),
+		.arm_addr(dd_arm_addr),
+		.arm_rd(dd_arm_rd),
+		.arm_wr(dd_arm_wr),
+		.arm_wdata(dd_arm_wdata),
+		.arm_wstrb(dd_arm_wstrb),
+		.arm_q(dd_arm_q),
+		.irq_n64(dd_irq_n64),
+		.irq_arm(irq)
+	);
+
+	// /INT1 only while the cart answers as the 64DD
+	assign int1_t = ~(dd_irq_n64 & dd_enable);
 
 	// S_DAT monitor, cleared when the N64 is turned on: falling edges, EEPROM
 	// commands answered, and how long the line stays low. The PIF hangs when

@@ -22,13 +22,15 @@ const char *rom_format_name(rom_format_t fmt)
 	}
 }
 
+// The header's first word is the PI timing: 0x80 first and the latency (0x40)
+// last. Games use 0x80371240; the 64DD IPL ROM 0x80270740.
 rom_format_t rom_detect_format(const uint8_t *first4)
 {
-	if (first4[0] == 0x80 && first4[1] == 0x37 && first4[2] == 0x12 && first4[3] == 0x40)
+	if (first4[0] == 0x80 && first4[3] == 0x40)
 		return ROM_FMT_Z64;
-	if (first4[0] == 0x37 && first4[1] == 0x80 && first4[2] == 0x40 && first4[3] == 0x12)
+	if (first4[1] == 0x80 && first4[2] == 0x40)
 		return ROM_FMT_V64;
-	if (first4[0] == 0x40 && first4[1] == 0x12 && first4[2] == 0x37 && first4[3] == 0x80)
+	if (first4[3] == 0x80 && first4[0] == 0x40)
 		return ROM_FMT_N64;
 	return ROM_FMT_UNKNOWN;
 }

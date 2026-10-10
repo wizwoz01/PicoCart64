@@ -5,6 +5,7 @@
 #   JA: AD0-AD7     JB: AD8-AD15     JC: ALE_L, ALE_H, ~WRITE, ~READ, COLD_RESET
 #   except AD1 on JD7 and AD5 on JD8: JA2 and JA8 didn't make reliable contact
 #   with the jumpers on the board this was brought up on.
+#   JC9: /INT1 for the 64DD (open drain)
 #
 #   JD: S_DAT (EEPROM joybus), CIC type bits 0-2 to the Pico (all open drain)
 #
@@ -33,12 +34,14 @@ set_property PACKAGE_PIN W10  [get_ports {n64_ad[13]}]
 set_property PACKAGE_PIN V9   [get_ports {n64_ad[14]}]
 set_property PACKAGE_PIN V8   [get_ports {n64_ad[15]}]
 
-# JC -> control (inputs only)
+# JC -> control (inputs), and /INT1
 set_property PACKAGE_PIN AB7  [get_ports n64_alel]
 set_property PACKAGE_PIN AB6  [get_ports n64_aleh]
 set_property PACKAGE_PIN Y4   [get_ports n64_write_n]
 set_property PACKAGE_PIN AA4  [get_ports n64_read_n]
 set_property PACKAGE_PIN R6   [get_ports n64_cold_reset]
+# JC9 -> N64_INT (Lite board J2 pin 4, cart pin 44): the 64DD's interrupt
+set_property PACKAGE_PIN T4   [get_ports n64_int1]
 
 # User LEDs LD0..LD7
 set_property PACKAGE_PIN T22  [get_ports {led[0]}]
@@ -86,10 +89,13 @@ set_property PULLDOWN TRUE [get_ports n64_cold_reset]
 # gives cleaner edges over long wires.
 set_property PULLUP TRUE [get_ports n64_sdat]
 
+# /INT1 is open drain too; the pull-up keeps it inactive when nothing pulls it
+set_property PULLUP TRUE [get_ports n64_int1]
+
 # Weak, slow bus outputs: less ringing on the wires, and less ground bounce
 # when all 16 AD lines switch at once
-set_property DRIVE 4 [get_ports {n64_ad[*] n64_sdat cic_type[*]}]
-set_property SLEW SLOW [get_ports {n64_ad[*] n64_sdat cic_type[*]}]
+set_property DRIVE 4 [get_ports {n64_ad[*] n64_sdat cic_type[*] n64_int1}]
+set_property SLEW SLOW [get_ports {n64_ad[*] n64_sdat cic_type[*] n64_int1}]
 
 # The OLED shares bank 13 with the Pmods: keep its edges slow and weak too
 set_property DRIVE 4 [get_ports {oled_*}]
@@ -97,7 +103,7 @@ set_property SLEW SLOW [get_ports {oled_*}]
 
 # The N64 bus is asynchronous to the FPGA clock; it is synchronized in n64_in_filter.v
 set_false_path -from [get_ports {n64_*}]
-set_false_path -to [get_ports {n64_ad[*] n64_sdat cic_type[*]}]
+set_false_path -to [get_ports {n64_ad[*] n64_sdat cic_type[*] n64_int1}]
 set_false_path -to [get_ports {led[*]}]
 # Buttons are synchronized in btn_debounce.v, the OLED SPI runs at 5 MHz
 set_false_path -from [get_ports {btn[*]}]

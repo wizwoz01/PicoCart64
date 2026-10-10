@@ -13,8 +13,11 @@
 //   - each ~READ pulse: cart drives one 16-bit word, address += 2
 //   - each ~WRITE pulse: N64 drives one 16-bit word, address += 2
 //
-// Only cartridge ROM (0x10000000-0x1FBFFFFF) and SRAM (0x08000000-0x080FFFFF)
-// are claimed. Every other address (64DD etc.) is never driven.
+// Claimed: cartridge ROM (0x10000000-0x1FBFFFFF, unless rom_off) and SRAM
+// (0x08000000-0x080FFFFF), and with dd_enable the 64DD: its registers and
+// buffers (0x05000000-0x050005FF, dd_asic) and its IPL ROM (0x06000000-
+// 0x063FFFFF, streamed like the cartridge ROM from 64 MB above it in DDR).
+// Every other address is never driven.
 //
 // AD is latched from the last synchronized sample taken while the strobe was
 // still at its old level, so the value is correct even if the N64 changes AD
@@ -30,6 +33,8 @@ module n64_pi_bus (
 	input  wire        clk,
 	input  wire        rst,
 	input  wire        enable,
+	input  wire        dd_enable,		// answer as the 64DD
+	input  wire        rom_off,		// no cartridge: leave 0x10000000-0x1FBFFFFF alone
 
 	// N64 pins
 	input  wire [15:0] ad_i,
@@ -43,7 +48,7 @@ module n64_pi_bus (
 
 	// ROM word stream (rom_prefetch)
 	output reg         rom_start = 1'b0,
-	output reg  [25:0] rom_addr = 26'd0,
+	output reg  [26:0] rom_addr = 27'd0,	// bit 26: 64DD IPL ROM
 	input  wire [15:0] rom_data,
 	input  wire        rom_valid,
 	output reg         rom_pop = 1'b0,
@@ -53,6 +58,14 @@ module n64_pi_bus (
 	input  wire [15:0] sram_rdata,
 	output reg  [15:0] sram_wdata = 16'h0000,
 	output reg         sram_we = 1'b0,
+
+	// 64DD registers and buffers (dd_asic): halfword index from 0x05000000
+	output reg  [9:0]  dd_idx = 10'd0,
+	input  wire [15:0] dd_rdata,
+	output reg         dd_rd = 1'b0,		// the halfword at dd_ev_idx was read
+	output reg         dd_wr = 1'b0,		// write dd_wdata at dd_ev_idx
+	output reg  [9:0]  dd_ev_idx = 10'd0,
+	output reg  [15:0] dd_wdata = 16'h0000,
 
 	// Status
 	output wire        n64_on,
@@ -89,6 +102,7 @@ module n64_pi_bus (
 	localparam R_NONE = 2'd0;
 	localparam R_ROM  = 2'd1;
 	localparam R_SRAM = 2'd2;
+	localparam R_DD   = 2'd3;
 
 	wire aleh_s, aleh_q, alel_s, alel_q, rd_s, rd_q, wr_s, wr_q, rst_s, rst_q;
 
@@ -170,6 +184,8 @@ module n64_pi_bus (
 		rom_start   <= 1'b0;
 		rom_pop     <= 1'b0;
 		sram_we     <= 1'b0;
+		dd_rd       <= 1'b0;
+		dd_wr       <= 1'b0;
 		addr_pulse  <= 1'b0;
 		rom_access  <= 1'b0;
 		sram_access <= 1'b0;
@@ -184,11 +200,19 @@ module n64_pi_bus (
 			if (alel_ok) begin
 				last_addr[15:0] <= hold_l;
 				addr_pulse <= 1'b1;
-				if (addr_full >= 32'h1000_0000 && addr_full <= 32'h1FBF_FFFF) begin
+				if (addr_full >= 32'h1000_0000 && addr_full <= 32'h1FBF_FFFF && !rom_off) begin
 					region <= R_ROM;
 					rom_start <= 1'b1;
-					rom_addr <= addr_full[25:0];
+					rom_addr <= {1'b0, addr_full[25:0]};
 					rom_access <= 1'b1;
+				end else if (dd_enable && addr_full[31:22] == 10'h018) begin
+					region <= R_ROM;		// 64DD IPL ROM
+					rom_start <= 1'b1;
+					rom_addr <= {5'b10000, addr_full[21:0]};
+					rom_access <= 1'b1;
+				end else if (dd_enable && addr_full[31:11] == 21'h00A000 && addr_full[10:9] != 2'b11) begin
+					region <= R_DD;			// 0x05000000-0x050005FF
+					dd_idx <= addr_full[10:1];
 				end else if (addr_full[31:20] == 12'h080) begin
 					region <= R_SRAM;
 					sram_idx <= sram_resolve(addr_full);
@@ -207,6 +231,11 @@ module n64_pi_bus (
 					rom_pop <= 1'b1;
 				else if (region == R_SRAM)
 					sram_idx <= sram_idx + 16'd1;
+				else if (region == R_DD) begin
+					dd_rd <= 1'b1;
+					dd_ev_idx <= dd_idx;
+					dd_idx <= dd_idx + 10'd1;
+				end
 			end
 
 			if (wr_rise) begin
@@ -218,6 +247,11 @@ module n64_pi_bus (
 					sram_widx <= sram_idx;
 					sram_wdata <= hold_w;
 					sram_idx <= sram_idx + 16'd1;
+				end else if (region == R_DD) begin
+					dd_wr <= 1'b1;
+					dd_ev_idx <= dd_idx;
+					dd_wdata <= hold_w;
+					dd_idx <= dd_idx + 10'd1;
 				end
 			end
 		end
@@ -228,7 +262,7 @@ module n64_pi_bus (
 	wire drive = active && (region != R_NONE) && !rd_q && !rd_s;
 
 	always @(posedge clk) begin
-		ad_o <= (region == R_ROM) ? rom_data : sram_rdata;
+		ad_o <= (region == R_ROM) ? rom_data : (region == R_DD) ? dd_rdata : sram_rdata;
 		ad_t <= {16{~drive}};
 	end
 

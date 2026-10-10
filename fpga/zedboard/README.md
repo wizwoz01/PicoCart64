@@ -48,6 +48,7 @@ only pulls them low or lets go, so it never powers the Pico while the N64 is off
 | CIC type 0  | J1 pin 2 (GPIO26) | JD2 |
 | CIC type 1  | J1 pin 3 (GPIO27) | JD3 |
 | CIC type 2  | J1 pin 4 (GPIO28) | JD4 |
+| /INT1 (64DD interrupt) | J2 pin 4 (N64_INT) | JC9 |
 | GND         | any GND | JD5 |
 
 Without the CIC type wires the Pico answers as a 6102/7101, which covers most
@@ -90,7 +91,7 @@ by the wires are ignored.
 | Offset | Name | |
 |--------|------|-|
 | 0x00000 | ID | RO, `0x4E363443` |
-| 0x00004 | CTRL | bit 0: enable |
+| 0x00004 | CTRL | bit 0: enable, bit 1: answer as the 64DD, bit 2: no cartridge (leave the ROM addresses alone), bit 3: the SRAM is a FlashRAM chip |
 | 0x00008 | ROM_BASE | DDR address of the `.z64` image, 128-byte aligned (default `0x10000000`) |
 | 0x0000C | STATUS | bit 0: N64 on, bit 1: SRAM dirty, bit 2: underrun seen, bit 3: EEPROM dirty |
 | 0x00010 | CLEAR | write bit 1: clear SRAM dirty, bit 2: clear underrun, bit 3: clear EEPROM dirty |
@@ -125,6 +126,7 @@ by the wires are ignored.
 | 0x05000-0x0503F | NOISE | the first 16 noise events: bits 31:28 type (1 short ALE_H, 2 short ALE_L, 3 odd read count, 4 short ~READ), 27:20 width in 10 ns clocks or the read count, 19:0 microseconds since power on |
 | 0x06000-0x06FFF | XFER | the last 256 finished transfers, transfer n in entry n % 256, 4 words each: address, {writes, reads}, sum of the halfwords on AD, microseconds since power on |
 | 0x07000-0x07FFF | SDAT_LOG | the first 1024 S_DAT events since power on: bits 31:30 event (0 line fell, 1 line rose, 2 cart pulls low, 3 cart lets go), 29:0 time in 40 ns units |
+| 0x08000-0x09FFF | DD | the 64DD (`rtl/dd_asic.v`): sector, C2 and MSEQ buffers at 0x08000, what each ASIC register reads at 0x09000, flags at 0x09080, the N64's register writes as events at 0x09084 |
 | 0x20000-0x3FFFF | SRAM | 128 KB. Word k = N64 SRAM bytes 4k..4k+3 as `b0<<24 \| b1<<16 \| b2<<8 \| b3` |
 
 The bus monitor registers (MON_*) and the trace are cleared when the N64 is turned
@@ -207,11 +209,13 @@ partition. The loader also keeps `n64last.txt` (last game played) and `n64cfg.tx
 cd fpga/zedboard/sw/loader/test
 cc -I../src -o test_rom_util test_rom_util.c ../src/rom_util.c ../src/cic.c ../src/save_db.c && ./test_rom_util
 cc -I../src -o test_ui test_ui.c ../src/menu.c ../src/tui.c ../src/oled_gfx.c ../src/ui.c ../src/rom_util.c ../src/bus_diag.c && ./test_ui
+cc -I../src -o test_dd test_dd.c ../src/dd_disk.c ../src/dd_drive.c && ./test_dd
 ```
 
 `test_ui` covers the menu logic, terminal key decoding, the terminal renderer
 (through a small VT100 model), OLED drawing, the menu, loading and game screens,
-and the bus diagnosis.
+and the bus diagnosis. `test_dd` covers the 64DD disk geometry and the drive
+(commands, the clock, sector reads and writes) against a model of `dd_asic.v`.
 
 ## Picking a game
 
@@ -284,6 +288,34 @@ branch to itself on it becomes a NOP), updates the header checksum the boot code
 checks, and logs "Removed 1 region lock from the boot code". The ROM file on the
 SD card isn't changed.
 
+## 64DD
+
+The cart can also be the 64DD disk drive. It answers the drive's registers and
+buffers at `0x05000000` and serves the 64DD IPL ROM at `0x06000000`; the loader
+emulates the drive (`sw/loader/src/dd_drive.c`, after ares) in the interrupt of
+the cart's events, with the disk in DDR. It needs:
+
+- the `/INT1` wire (table above), which the drive uses to interrupt the N64
+- the Pico firmware with the 64DD CIC codes (`sw/README.md`)
+- on the SD card: your 64DD IPL ROM dump (any `.n64`/`.z64` whose header says
+  NDD, e.g. the US development IPL `NDDE` or the Japanese `NDDJ2`) and `.ndd`
+  disk images (64,931,840 bytes)
+
+| Pick in the menu | What the N64 boots |
+|---|---|
+| a `.ndd` disk | the 64DD IPL ROM with that disk, no cartridge |
+| a game, with a disk still in the drive | the game, with the 64DD and the disk attached (F-Zero X with the Expansion Kit) |
+| the IPL ROM itself | the IPL with whatever disk is in the drive, or none |
+
+So for a disk that works with a cartridge, pick the disk, go back to the menu
+(`m`) and pick the game. The disk stays in the drive until `e` takes it out
+(in the menu, or with the N64 off). Disk writes go back to the `.ndd` file 1 s
+after the game stops writing, and when you leave the game. The drive's clock
+starts at the loader's build time.
+
+Region: like a real drive, the IPL may refuse disks of another region (a US IPL
+and a Japanese disk).
+
 ## Saves
 
 The loader looks up each game's save type in a built-in list (`sw/loader/src/save_db.c`,
@@ -294,10 +326,12 @@ from the ares emulator) and keeps the save next to the ROM:
 | SRAM 256 Kbit / 768 Kbit | Resident Evil 2, Ocarina of Time, Smash Bros. | `<rom name>.sra` |
 | EEPROM 4 Kbit | Super Mario 64, Mario Kart 64, GoldenEye 007 | `<rom name>.eep` |
 | EEPROM 16 Kbit | Conker's Bad Fur Day, Perfect Dark, Banjo-Tooie | `<rom name>.eep` |
-| FlashRAM | Majora's Mask, Paper Mario, Pokemon Stadium | not supported yet, the game runs but doesn't save |
+| FlashRAM | Majora's Mask, Paper Mario, Pokemon Stadium | `<rom name>.fla` (128 KB) |
 
 Saves are written 1 second after the game stops writing, and when you press `s`
-or BTNC. For a game that isn't in the list, the cart offers both a 4 Kbit EEPROM
+or BTNC. FlashRAM games find a Macronix MX29L1101 (`rtl/flashram.v`, after ares): its
+commands, page programming and erases work on the cart's 128 KB of save memory.
+For a game that isn't in the list, the cart offers both a 4 Kbit EEPROM
 and SRAM, and keeps whichever the game writes. An existing 2 KB `.eep` file makes
 its EEPROM 16 Kbit. The `.eep` files hold the EEPROM bytes in order, the same
 layout most emulators use.

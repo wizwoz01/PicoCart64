@@ -23,7 +23,7 @@ module rom_prefetch #(
 
 	input  wire [31:0] rom_base,
 	input  wire        start,
-	input  wire [25:0] start_addr,
+	input  wire [26:0] start_addr,		// bytes from rom_base (64DD IPL ROM at 64 MB)
 	input  wire        pop,
 	output wire [15:0] data,
 	output wire        valid,
@@ -57,7 +57,7 @@ module rom_prefetch #(
 	reg active = 1'b0;
 	reg busy = 1'b0;			// a burst is outstanding (AR issued, RLAST not seen)
 	reg discard = 1'b0;			// drop the rest of the outstanding burst
-	reg [25:3] fetch_beat = 0;		// next 8-byte beat to request
+	reg [26:3] fetch_beat = 0;		// next 8-byte beat to request
 
 	wire [FIFO_AW:0] count = wr_ptr - rd_ptr;
 	wire [FIFO_AW:0] free = DEPTH - count;
@@ -102,7 +102,7 @@ module rom_prefetch #(
 				wr_ptr <= 0;
 				rd_ptr <= 0;
 				hw <= start_addr[2:1];
-				fetch_beat <= start_addr[25:3];
+				fetch_beat <= start_addr[26:3];
 				if (busy && !(m_axi_rvalid && m_axi_rlast))
 					discard <= 1'b1;
 			end else if (active && !busy && free >= burst_beats) begin

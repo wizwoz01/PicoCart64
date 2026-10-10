@@ -357,6 +357,8 @@ static void draw_game(uint32_t now, uint8_t *fb)
 	ui_level_t level;
 
 	tui_line_lr(0, TUI_BAR, TITLE, ui.n64_on ? "N64 ON " : "N64 off ");
+	if (ui.dd_status[0])
+		tui_line(1, TUI_NORMAL, "  64DD       %s", ui.dd_status);
 	tui_line(2, TUI_HEADER, "  Game       %s", ui.title[0] ? ui.title : "(no title in the header)");
 	fmt_size(size, sizeof(size), ui.rom_size);
 	tui_line(3, TUI_NORMAL, "  ROM        %s  (%s, %s%s)", ui.rom_name, size, ui.rom_format ? ui.rom_format : "?", ui.pal ? ", PAL" : "");
@@ -391,7 +393,8 @@ static void draw_game(uint32_t now, uint8_t *fb)
 	}
 	tui_line(12, TUI_HEADER, "  Messages");
 	draw_log(13, rows - 3);
-	tui_line(rows - 1, TUI_BAR, " s save now   m or Esc: back to the menu (N64 off first)   ^L redraw");
+	tui_line(rows - 1, TUI_BAR, ui.dd_status[0] ? " s save now   e eject disk   m or Esc: back to the menu (N64 off first)   ^L redraw" :
+		 " s save now   m or Esc: back to the menu (N64 off first)   ^L redraw");
 
 	ui_base_name(ui.rom_name, name, sizeof(name));
 	gfx_fill(fb, 0, 0, GFX_W, 0xFF);

@@ -105,6 +105,9 @@ ROMs/
 *.n64
 *.sra
 *.eep
+*.fla
+*.ndd
+*.d64
 
 rom.h
 

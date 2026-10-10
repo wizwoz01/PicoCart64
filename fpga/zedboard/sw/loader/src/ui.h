@@ -76,6 +76,7 @@ typedef struct {
 	int bus_valid;				// the N64 was turned on since the game was loaded
 	bus_mon_t bus;				// what it did since then
 	uint32_t last_addr;
+	char dd_status[UI_NAME_LEN + 64];	// the 64DD drive, "" without a disk
 
 	uint32_t log_seq;			// incremented by ui_log()
 } ui_t;

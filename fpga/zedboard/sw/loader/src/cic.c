@@ -38,6 +38,8 @@ static const struct {
 	{ CIC_6103, 0x78, 0x586FD4709867ull, CIC_CODE_6103, "6103/7103" },
 	{ CIC_6105, 0x91, 0x8618A45BC2D3ull, CIC_CODE_6105, "6105/7105" },
 	{ CIC_6106, 0x85, 0x2BBAD4E6EB74ull, CIC_CODE_6106, "6106/7106" },
+	{ CIC_DD_JP, 0xDD, 0x32B294E2AB90ull, CIC_CODE_DD_JP, "64DD Japan (8303)" },
+	{ CIC_DD_US, 0xDE, 0x05BA2EF0A5F1ull, CIC_CODE_DD_US, "64DD USA" },
 };
 
 static uint32_t rotl(uint32_t v, uint32_t s)

@@ -23,6 +23,9 @@ module tb_n64_cart;
 	localparam D1_LAT = 8'h40, D1_PWD = 8'h12, D1_RLS = 8'h03;
 	// Domain 2 (SRAM), typical values set by libultra
 	localparam D2_LAT = 8'h05, D2_PWD = 8'h0C, D2_RLS = 8'h02;
+	// 64DD registers (libleo's domain 2 settings), and its IPL ROM
+	localparam DD_LAT = 8'h03, DD_PWD = 8'h06, DD_RLS = 8'h02;
+	localparam IPL_LAT = 8'hFF, IPL_PWD = 8'hFF, IPL_RLS = 8'h03;
 
 	reg clk = 0;
 	reg aresetn = 0;
@@ -116,7 +119,7 @@ module tb_n64_cart;
 
 	// Deterministic ROM contents: byte at ROM offset o
 	function [7:0] rom_byte(input [31:0] o);
-		rom_byte = (o[7:0] * 8'd31) ^ o[15:8] ^ (o[23:16] + 8'd7) ^ {6'b0, o[25:24]};
+		rom_byte = (o[7:0] * 8'd31) ^ o[15:8] ^ (o[23:16] + 8'd7) ^ {6'b0, o[25:24]} ^ (o[26] ? 8'hA5 : 8'h00);
 	endfunction
 
 	function [15:0] rom_hw(input [31:0] o);
@@ -228,6 +231,7 @@ module tb_n64_cart;
 	reg        pif_low = 0;
 	wire       sdat_t;
 	wire [2:0] cic_t;
+	wire       int1_t, dd_irq;
 	wire       sdat_line = !(pif_low || !sdat_t);
 	reg  [7:0] jb_tx [0:15];
 	reg  [7:0] jb_rx [0:15];
@@ -380,7 +384,9 @@ module tb_n64_cart;
 		.oled_sdin(oled_sdin),
 		.sdat_i(sdat_line),
 		.sdat_t(sdat_t),
-		.cic_t(cic_t)
+		.cic_t(cic_t),
+		.int1_t(int1_t),
+		.irq(dd_irq)
 	);
 
 	// ------------------------------------------------------------------
@@ -494,6 +500,16 @@ module tb_n64_cart;
 				#((rls + 1) * T_PI - 4);
 			end
 			#(2 * T_PI);
+		end
+	endtask
+
+	// FlashRAM command: two halfword writes to 0x08010000
+	task flash_cmd(input [31:0] c);
+		begin
+			pi_addr(32'h0801_0000);
+			pi_write(1, c[31:16], D2_LAT, D2_PWD, D2_RLS);
+			pi_addr(32'h0801_0002);
+			pi_write(1, c[15:0], D2_LAT, D2_PWD, D2_RLS);
 		end
 	endtask
 
@@ -999,6 +1015,208 @@ module tb_n64_cart;
 		axil_write(18'h00010, 32'h8);
 		axil_read(18'h0000C, r);
 		expect32(r & 8, 0, "STATUS.eeprom_dirty after clear");
+
+
+		// 64DD: silent until enabled
+		check_undriven(32'h0500_0508, DD_LAT, DD_PWD, DD_RLS, "64DD registers while off");
+		check_undriven(32'h0600_0000, D1_LAT, D1_PWD, D1_RLS, "64DD IPL ROM while off");
+		axil_write(18'h00004, 32'h3);
+		axil_read(18'h00004, r);
+		expect32(r, 32'h3, "CTRL with the 64DD on");
+
+		// The ARM sets what the registers read; odd halfwords read 0
+		axil_write(18'h09008, 32'h0141);	// STATUS: disk present, reset, disk changed
+		axil_write(18'h09040, 32'h0003);	// ID
+		pi_addr(32'h0500_0508);
+		pi_read(2, DD_LAT, DD_PWD, DD_RLS);
+		expect16(rd_buf[0], 16'h0141, "DD STATUS");
+		expect16(rd_buf[1], 16'h0000, "DD STATUS second halfword");
+		pi_addr(32'h0500_0540);
+		pi_read(1, DD_LAT, DD_PWD, DD_RLS);
+		expect16(rd_buf[0], 16'h0003, "DD ID");
+
+		// DATA and a command: events for the ARM, BUSY at once
+		pi_addr(32'h0500_0500);
+		pi_write(1, 16'h1234, DD_LAT, DD_PWD, DD_RLS);
+		pi_addr(32'h0500_0508);
+		pi_write(1, 16'h0001, DD_LAT, DD_PWD, DD_RLS);
+		expect1(dd_irq, 1, "DD ARM interrupt with events");
+		pi_addr(32'h0500_0508);
+		pi_read(1, DD_LAT, DD_PWD, DD_RLS);
+		expect16(rd_buf[0], 16'h01C1, "DD STATUS busy after a command");
+		pi_addr(32'h0500_0508);
+		pi_write(1, 16'h0002, DD_LAT, DD_PWD, DD_RLS);	// ignored while busy
+		axil_read(18'h09000, r);
+		expect32(r, 32'h1234, "DD DATA as written by the N64");
+		axil_read(18'h09084, r);
+		expect32(r, 32'h8000_1234, "DD event 1: DATA");
+		axil_read(18'h09084, r);
+		expect32(r, 32'h8002_0001, "DD event 2: command");
+		axil_read(18'h09084, r);
+		expect32(r, 32'h0, "DD no event 3 (command while busy)");
+		expect1(dd_irq, 0, "DD ARM interrupt after the events");
+
+		// The command completes: MECHA interrupt on /INT1 until BM_CTL bit 8
+		axil_write(18'h09080, 32'h0000_0102);	// set MECHA, clear BUSY
+		expect1(int1_t, 0, "DD /INT1 with MECHA");
+		pi_addr(32'h0500_0508);
+		pi_read(1, DD_LAT, DD_PWD, DD_RLS);
+		expect16(rd_buf[0], 16'h0341, "DD STATUS with MECHA");
+		pi_addr(32'h0500_0510);
+		pi_write(1, 16'h0100, DD_LAT, DD_PWD, DD_RLS);
+		expect1(int1_t, 1, "DD /INT1 after BM_CTL bit 8");
+
+		// A sector: BM start, the ARM fills the buffer and raises BM, the N64
+		// reads it, then STATUS, which clears BM and asks for the next one
+		pi_addr(32'h0500_0510);
+		pi_write(1, 16'h8005, DD_LAT, DD_PWD, DD_RLS);
+		axil_read(18'h09080, r);
+		expect32(r & 32'hF, 32'h8, "DD FLAGS: BM START");
+		axil_read(18'h0901C, r);
+		expect32(r, 32'h05C3, "DD CUR_SECTOR from BM_CTL");
+		axil_write(18'h08400, 32'hA1A2A3A4);
+		axil_write(18'h08404, 32'hB1B2B3B4);
+		axil_write(18'h09080, 32'h4);
+		expect1(int1_t, 0, "DD /INT1 with BM");
+		pi_addr(32'h0500_0400);
+		pi_read(4, DD_LAT, DD_PWD, DD_RLS);
+		expect32({rd_buf[0], rd_buf[1]}, 32'hA1A2A3A4, "DD sector buffer word 0");
+		expect32({rd_buf[2], rd_buf[3]}, 32'hB1B2B3B4, "DD sector buffer word 1");
+		while (dd_irq) begin
+			axil_read(18'h09084, r);		// drop the BM_CTL events
+		end
+		pi_addr(32'h0500_0510);
+		pi_read(1, DD_LAT, DD_PWD, DD_RLS);
+		expect16(rd_buf[0], 16'h8000, "DD BM_STATUS with START");
+		pi_addr(32'h0500_0508);
+		pi_read(2, DD_LAT, DD_PWD, DD_RLS);
+		expect16(rd_buf[0], 16'h0541, "DD STATUS with BM");
+		expect1(int1_t, 1, "DD /INT1 after reading STATUS");
+		axil_read(18'h09084, r);
+		expect32(r, 32'h801F_0000, "DD event: BM acknowledged");
+
+		// BM reset clears START
+		pi_addr(32'h0500_0510);
+		pi_write(1, 16'h1000, DD_LAT, DD_PWD, DD_RLS);
+		pi_addr(32'h0500_0510);
+		pi_write(1, 16'h0000, DD_LAT, DD_PWD, DD_RLS);
+		axil_read(18'h09080, r);
+		expect32(r & 32'hF, 32'h0, "DD FLAGS after BM reset");
+
+		// C2 buffer and MSEQ written by the N64, read by the ARM
+		pi_addr(32'h0500_0000);
+		pi_write(2, 16'h5566, DD_LAT, DD_PWD, DD_RLS);
+		axil_read(18'h08000, r);
+		expect32(r, 32'h5566_5667, "DD C2 buffer from the N64");
+		pi_addr(32'h0500_0582);
+		pi_write(1, 16'h7788, DD_LAT, DD_PWD, DD_RLS);
+		axil_read(18'h08500, r);
+		expect32(r, 32'h0000_7788, "DD MSEQ from the N64");
+		while (dd_irq) begin
+			axil_read(18'h09084, r);
+		end
+
+		// IPL ROM: streamed from 64 MB above ROM_BASE
+		pi_addr(32'h0600_1000);
+		pi_read(8, IPL_LAT, IPL_PWD, IPL_RLS);
+		nbad = 0;
+		for (j = 0; j < 8; j = j + 1)
+			if (rd_buf[j] !== rom_hw(32'h0400_1000 + j * 2))
+				nbad = nbad + 1;
+		if (nbad) begin
+			$display("FAIL 64DD IPL ROM: %0d of 8 words wrong (%04h)", nbad, rd_buf[0]);
+			errors = errors + 1;
+		end else begin
+			$display("ok   64DD IPL ROM from DDR + 64 MB");
+		end
+
+		// No cartridge: the ROM addresses go quiet, the IPL ROM still answers
+		axil_write(18'h00004, 32'h7);
+		check_undriven(32'h1000_0000, D1_LAT, D1_PWD, D1_RLS, "cartridge ROM with rom_off");
+		pi_addr(32'h0600_0000);
+		pi_read(2, IPL_LAT, IPL_PWD, IPL_RLS);
+		expect16(rd_buf[0], rom_hw(32'h0400_0000), "64DD IPL ROM with rom_off");
+		axil_write(18'h00004, 32'h1);
+		check_undriven(32'h0500_0508, DD_LAT, DD_PWD, DD_RLS, "64DD registers after turning it off");
+
+
+		// FlashRAM in place of the SRAM: chip ID and status
+		axil_write(18'h00004, 32'h9);
+		flash_cmd(32'hE100_0000);
+		pi_addr(32'h0800_0000);
+		pi_read(4, D2_LAT, D2_PWD, D2_RLS);
+		expect32({rd_buf[0], rd_buf[1]}, 32'h1111_8001, "FlashRAM ID word 0");
+		expect32({rd_buf[2], rd_buf[3]}, 32'h00C2_001D, "FlashRAM ID word 1");
+		flash_cmd(32'hD200_0000);
+		pi_addr(32'h0800_0000);
+		pi_read(2, D2_LAT, D2_PWD, D2_RLS);
+		expect32({rd_buf[0], rd_buf[1]}, 32'h008C_008C, "FlashRAM status ready");
+
+		// Chip erase: busy, then ready, and the loader sees the change
+		axil_write(18'h00010, 32'h2);
+		flash_cmd(32'h3C00_0000);
+		flash_cmd(32'h7800_0000);
+		pi_addr(32'h0800_0000);
+		pi_read(1, D2_LAT, D2_PWD, D2_RLS);
+		expect16(rd_buf[0], 16'h000E, "FlashRAM status while erasing");
+		#700000;
+		pi_addr(32'h0800_0000);
+		pi_read(1, D2_LAT, D2_PWD, D2_RLS);
+		expect16(rd_buf[0], 16'h008C, "FlashRAM status after erase");
+		axil_read(18'h0000C, r);
+		expect32(r & 2, 2, "SRAM dirty after flash erase");
+
+		// Page buffer, then program page 3
+		flash_cmd(32'hB400_0000);
+		pi_addr(32'h0800_0000);
+		pi_write(64, 16'h1000, D2_LAT, D2_PWD, D2_RLS);
+		flash_cmd(32'hA500_0003);
+		#3000;
+		flash_cmd(32'hF000_0000);
+		pi_addr(32'h0800_0180);
+		pi_read(64, D2_LAT, D2_PWD, D2_RLS);
+		nbad = 0;
+		for (j = 0; j < 64; j = j + 1)
+			if (rd_buf[j] !== 16'h1000 + j * 16'h0101)
+				nbad = nbad + 1;
+		if (nbad) begin
+			$display("FAIL FlashRAM page 3: %0d of 64 halfwords wrong (%04h)", nbad, rd_buf[0]);
+			errors = errors + 1;
+		end else begin
+			$display("ok   FlashRAM page 3 programmed and read back");
+		end
+		pi_addr(32'h0800_0100);
+		pi_read(2, D2_LAT, D2_PWD, D2_RLS);
+		expect32({rd_buf[0], rd_buf[1]}, 32'hFFFF_FFFF, "FlashRAM page 2 still erased");
+		axil_read(18'h20180, r);
+		expect32(r, 32'h1000_1101, "FlashRAM page 3 via SRAM window");
+
+		// Programming only clears bits
+		flash_cmd(32'hB400_0000);
+		pi_addr(32'h0800_0000);
+		pi_write(1, 16'h0F0F, D2_LAT, D2_PWD, D2_RLS);
+		flash_cmd(32'hA500_0003);
+		#3000;
+		flash_cmd(32'hF000_0000);
+		pi_addr(32'h0800_0180);
+		pi_read(2, D2_LAT, D2_PWD, D2_RLS);
+		expect32({rd_buf[0], rd_buf[1]}, 32'h0000_1101, "FlashRAM program ANDs");
+
+		// Sector erase: sector 0 holds page 3
+		flash_cmd(32'h4B00_0000);
+		flash_cmd(32'h7800_0000);
+		#100000;
+		flash_cmd(32'hF000_0000);
+		pi_addr(32'h0800_0180);
+		pi_read(2, D2_LAT, D2_PWD, D2_RLS);
+		expect32({rd_buf[0], rd_buf[1]}, 32'hFFFF_FFFF, "FlashRAM sector erase");
+
+		// Plain SRAM again
+		axil_write(18'h00004, 32'h1);
+		pi_addr(32'h0800_0180);
+		pi_write(1, 16'h4242, D2_LAT, D2_PWD, D2_RLS);
+		axil_read(18'h20180, r);
+		expect32(r & 32'hFFFF0000, 32'h4242_0000, "SRAM writes with FlashRAM off");
 
 		if (errors == 0)
 			$display("\nPASS");

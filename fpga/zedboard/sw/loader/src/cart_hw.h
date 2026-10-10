@@ -48,12 +48,23 @@
 #define CART_XFER_LEN        256
 #define CART_SDAT_LOG        0x07000u	// first 1024 S_DAT events, see bus_diag.h
 #define CART_SDAT_LOG_LEN    1024
+// 64DD (dd_asic.v): buffers, what each ASIC register reads, flags, events
+#define CART_DD_C2           0x08000u
+#define CART_DD_SECTOR       0x08400u
+#define CART_DD_MSEQ         0x08500u
+#define CART_DD_REG(n)       (0x09000u + 4u * (n))
+#define CART_DD_FLAGS        0x09080u	// [3:0] read / set, [11:8] clear, [8] read: events lost
+#define CART_DD_EVENT        0x09084u	// [31] valid, [20:16] register, [15:0] data
+#define CART_DD_IRQ          61		// IRQ_F2P[0]: events waiting
 #define CART_SRAM            0x20000u
 #define CART_SRAM_SIZE       0x20000u
 
 #define CART_ID_MAGIC        0x4E363443u
 
 #define CART_CTRL_ENABLE     (1u << 0)
+#define CART_CTRL_DD         (1u << 1)	// answer as the 64DD
+#define CART_CTRL_ROM_OFF    (1u << 2)	// no cartridge
+#define CART_CTRL_FLASH      (1u << 3)	// the SRAM is a FlashRAM chip
 
 #define CART_STATUS_N64_ON   (1u << 0)
 #define CART_STATUS_DIRTY    (1u << 1)
@@ -94,3 +105,10 @@
 // near the start of DDR, far below this.
 #define ROM_DDR_BASE         0x10000000u
 #define ROM_MAX_SIZE         (64u * 1024 * 1024)
+
+// 64DD: its IPL ROM right after the ROM (the cart streams it from there), the
+// disk laid out physically, and the .ndd file while it is converted
+#define IPL_DDR_BASE         (ROM_DDR_BASE + ROM_MAX_SIZE)
+#define IPL_MAX_SIZE         (4u * 1024 * 1024)
+#define DD_PHYS_DDR_BASE     0x14400000u
+#define DD_NDD_DDR_BASE      0x18800000u

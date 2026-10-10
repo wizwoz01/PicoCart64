@@ -16,6 +16,8 @@ typedef enum {
 	CIC_6103,					// also 7103
 	CIC_6105,					// also 7105
 	CIC_6106,					// also 7106
+	CIC_DD_JP,					// 64DD IPL, Japan (8303, NDDJ2)
+	CIC_DD_US,					// 64DD IPL, USA development (NDDE0)
 } cic_t;
 
 // Code on the CIC type lines to the Pico (GPIO28..26). 1 = line released, so
@@ -26,6 +28,8 @@ typedef enum {
 #define CIC_CODE_6103 4
 #define CIC_CODE_6105 3
 #define CIC_CODE_6106 2
+#define CIC_CODE_DD_US 1			// the Pico answers as the 64DD's CIC
+#define CIC_CODE_DD_JP 0
 
 // The 48-bit value the PIF compares with the CIC's checksum: IPL2's hash of
 // IPL3 (0xFC0 bytes, ROM offset 0x40) with the CIC's seed

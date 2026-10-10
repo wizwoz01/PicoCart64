@@ -54,6 +54,10 @@ static void test_formats(void)
 	CHECK(rom_detect_format(v64) == ROM_FMT_V64);
 	CHECK(rom_detect_format(n64) == ROM_FMT_N64);
 	CHECK(rom_detect_format((const uint8_t *)"\0\0\0\0") == ROM_FMT_UNKNOWN);
+	CHECK(rom_detect_format((const uint8_t *)"\x80\x27\x07\x40") == ROM_FMT_Z64);	// 64DD IPL
+	CHECK(rom_detect_format((const uint8_t *)"\x27\x80\x40\x07") == ROM_FMT_V64);
+	CHECK(rom_detect_format((const uint8_t *)"\x40\x07\x27\x80") == ROM_FMT_N64);
+	CHECK(rom_detect_format((const uint8_t *)"\x80\x37\x12\x41") == ROM_FMT_UNKNOWN);
 
 	memcpy(tmp, z64, sizeof(tmp));
 	rom_to_z64(tmp, sizeof(tmp), ROM_FMT_Z64);

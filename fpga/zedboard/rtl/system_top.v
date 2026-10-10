@@ -2,7 +2,7 @@
 //
 // ZedBoard top: Zynq block design (design_1, created by scripts/create_project.tcl)
 // plus the bidirectional N64 AD bus buffers, push buttons, OLED, the joybus
-// S_DAT line and the CIC type lines (both open drain).
+// S_DAT line, the CIC type lines and /INT1 (all open drain).
 
 `default_nettype none
 
@@ -47,12 +47,14 @@ module system_top (
 	output wire        oled_sdin,
 
 	inout  wire        n64_sdat,
-	output wire [2:0]  cic_type		// to Pico GPIO26-28
+	output wire [2:0]  cic_type,		// to Pico GPIO26-28
+	output wire        n64_int1		// cart /INT1 (64DD interrupt)
 );
 
 	wire [15:0] ad_i, ad_o, ad_t;
 	wire        sdat_i, sdat_t;
 	wire [2:0]  cic_t;
+	wire        int1_t;
 
 	genvar i;
 	generate
@@ -82,6 +84,12 @@ module system_top (
 			);
 		end
 	endgenerate
+
+	OBUFT u_int1 (
+		.O(n64_int1),
+		.I(1'b0),
+		.T(int1_t)
+	);
 
 	design_1_wrapper u_bd (
 		.DDR_addr(DDR_addr),
@@ -123,7 +131,8 @@ module system_top (
 		.oled_sdin(oled_sdin),
 		.sdat_i(sdat_i),
 		.sdat_t(sdat_t),
-		.cic_t(cic_t)
+		.cic_t(cic_t),
+		.int1_t(int1_t)
 	);
 
 endmodule

@@ -30,12 +30,15 @@ set ps [create_bd_cell -type ip -vlnv xilinx.com:ip:processing_system7 ps7]
 apply_bd_automation -rule xilinx.com:bd_rule:processing_system7 \
 	-config {make_external "FIXED_IO, DDR" apply_board_preset "1" Master "Disable" Slave "Disable"} $ps
 
-# GP0 for the registers, HP0 (64-bit) for ROM reads, FCLK0 = 100 MHz
+# GP0 for the registers, HP0 (64-bit) for ROM reads, FCLK0 = 100 MHz, and the
+# cart's 64DD interrupt on IRQ_F2P[0] (GIC ID 61)
 set_property -dict [list \
 	CONFIG.PCW_USE_M_AXI_GP0 {1} \
 	CONFIG.PCW_USE_S_AXI_HP0 {1} \
 	CONFIG.PCW_S_AXI_HP0_DATA_WIDTH {64} \
 	CONFIG.PCW_FPGA0_PERIPHERAL_FREQMHZ {100} \
+	CONFIG.PCW_USE_FABRIC_INTERRUPT {1} \
+	CONFIG.PCW_IRQ_F2P_INTR {1} \
 ] $ps
 
 create_bd_cell -type module -reference n64_cart_top cart
@@ -53,10 +56,12 @@ apply_bd_automation -rule xilinx.com:bd_rule:axi4 -config { \
 } [get_bd_intf_pins ps7/S_AXI_HP0]
 
 foreach pin {ad_i ad_o ad_t aleh alel read_n write_n cold_reset led \
-	     btn oled_vdd oled_vbat oled_res oled_dc oled_sclk oled_sdin sdat_i sdat_t cic_t} {
+	     btn oled_vdd oled_vbat oled_res oled_dc oled_sclk oled_sdin sdat_i sdat_t cic_t int1_t} {
 	make_bd_pins_external [get_bd_pins cart/$pin]
 	set_property name $pin [get_bd_ports ${pin}_0]
 }
+
+connect_bd_net [get_bd_pins cart/irq] [get_bd_pins ps7/IRQ_F2P]
 
 assign_bd_address
 # Registers at 0x43C00000 (256 KB window: registers + SRAM)
