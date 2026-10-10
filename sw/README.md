@@ -74,6 +74,12 @@ games. Pulled low by the external device, they select the type:
 | 4 | 6103/7103 |
 | 3 | 6105/7105 |
 | 2 | 6106/7106 |
+| 1 | 64DD IPL, USA development (seed 0xDE) |
+| 0 | 64DD IPL, Japan (8303, seed 0xDD) |
+
+With codes 1 and 0 the Pico answers as the 64DD's CIC: it leaves the first ID
+bit to the drive, so the console boots the 64DD IPL ROM that the external device
+serves instead of a cartridge. If a cartridge CIC answers too, it stays quiet.
 
 The Pico's LED turns on once the console's PIF has accepted the CIC, then toggles
 on every command the PIF sends. If it stays off with the N64 on, the Pico has no

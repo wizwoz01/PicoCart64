@@ -15,7 +15,9 @@
  * @param seed     The CIC type's seed
  * @param checksum The CIC type's IPL3 checksum, most significant byte first
  * @param pal      1 for a PAL console, 0 for NTSC/MPAL
+ * @param dd       1 to answer as the 64DD's CIC (the console boots the 64DD
+ *                 IPL ROM); it stays quiet if a cartridge CIC answers too
  * @param led_pin  GPIO of an LED that turns on after the handshake and
  *                 toggles on every command, or -1
  */
-void cic_poll_run(uint8_t seed, const uint8_t checksum[6], int pal, int led_pin);
+void cic_poll_run(uint8_t seed, const uint8_t checksum[6], int pal, int dd, int led_pin);

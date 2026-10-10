@@ -139,13 +139,41 @@ static void cic_encode_round(uint8_t index)
 	} while ((index & 0x0F) != 0);
 }
 
-static void cic_write_id(int pal)
+// 64DD: the first ID bit belongs to the drive and reads high when no cartridge
+// CIC pulls it low. Returns 0 if a cartridge CIC did: the console boots the
+// cartridge then, and this CIC has to stay quiet.
+static int cic_dd_bit_free(void)
+{
+	int n = 0;
+
+	cic_clk_wait(false);
+	while (n < 3) {
+		if (gpio_get(N64_CIC_DCLK)) {
+			n++;
+		} else {
+			n = 0;
+			if (!cic_dq_get())
+				return 0;
+		}
+	}
+	return 1;
+}
+
+static void cic_write_id(int pal, int dd)
 {
 	uint8_t id = ((0 << 3) |	// CIC type: low = cartridge, high = 64DD
 		      (pal << 2) |	// Region: low = NTSC/MPAL, high = PAL
 		      0x01);		// Constant bit pattern
 
-	cic_write(id, 4);
+	// As the 64DD's CIC, leave the type bit high and send the other three
+	if (dd) {
+		if (!cic_dd_bit_free())
+			while (true)
+				tight_loop_contents();
+		cic_write(id, 3);
+	} else {
+		cic_write(id, 4);
+	}
 }
 
 static void cic_write_seed(uint8_t seed)
@@ -325,14 +353,14 @@ static void cic_led_toggle(void)
 		gpio_xor_mask(1u << cic_led);
 }
 
-void cic_poll_run(uint8_t seed, const uint8_t checksum[6], int pal, int led_pin)
+void cic_poll_run(uint8_t seed, const uint8_t checksum[6], int pal, int dd, int led_pin)
 {
 	cic_led = led_pin;
 	pal = pal ? 1 : 0;
 
 	gpio_set_dir(N64_CIC_DIO, GPIO_IN);
 
-	cic_write_id(pal);
+	cic_write_id(pal, dd);
 	cic_write_seed(seed);
 	cic_write_checksum(checksum);
 	cic_init_ram(pal);
