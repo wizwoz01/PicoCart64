@@ -13,6 +13,17 @@ N64 cart slot ── PicoCart64-lite v1.4 ──┬── Pico (CIC only: GP20/G
                                         └── wires ── ZedBoard Pmods JA/JB/JC/JD
 ```
 
+## Screenshots
+
+| | |
+|---|---|
+| ![Loader menu on the USB-UART terminal](pictures/tui.png) | ![Test ROM: 0 errors on all cart tests](pictures/n64test.jpg) |
+| The loader's menu on the terminal | `sw/n64test` with no errors on ROM, SRAM and EEPROM |
+| ![64DD IPL: Please insert disk](pictures/64dd_ipl.jpg) | ![Resident Evil 2 title screen](pictures/re2_title.jpg) |
+| The 64DD IPL, served and driven by the cart | Resident Evil 2 (Europe), a 64 MB ROM |
+| ![Resident Evil 2 language select](pictures/re2_language.jpg) | ![Resident Evil 2 with the Expansion Pak detected](pictures/re2_license.jpg) |
+| Its language select, past the removed region lock | Its license screen, with the Expansion Pak detected |
+
 ## Wiring
 
 Solder wires to the Pico's pins on the Lite board. Add a 33-47 Ω series resistor
