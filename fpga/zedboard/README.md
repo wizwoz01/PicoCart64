@@ -23,6 +23,8 @@ N64 cart slot ── PicoCart64-lite v1.4 ──┬── Pico (CIC only: GP20/G
 | The 64DD IPL, served and driven by the cart | Resident Evil 2 (Europe), a 64 MB ROM |
 | ![Resident Evil 2 language select](pictures/re2_language.jpg) | ![Resident Evil 2 with the Expansion Pak detected](pictures/re2_license.jpg) |
 | Its language select, past the removed region lock | Its license screen, with the Expansion Pak detected |
+| ![Resident Evil 2 intro: the Nintendo 64 logo](pictures/re2_n64logo.jpg) | |
+| Its intro, in PAL video | |
 
 ## Wiring
 
